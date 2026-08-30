@@ -1,0 +1,426 @@
+name: Build Pubto Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable source tag to build
+        required: true
+        type: string
+  repository_dispatch:
+    types: [pubto-source-tag]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pubto-release-${{ inputs.source_ref || github.event.client_payload.source_ref || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      source_sha: ${{ steps.pin.outputs.source_sha }}
+      source_tag: ${{ steps.pin.outputs.source_tag }}
+      version: ${{ steps.pin.outputs.version }}
+    steps:
+      - name: Validate dispatch contract
+        env:
+          DISPATCH_TARGET: ${{ github.event.client_payload.target }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == repository_dispatch && "$DISPATCH_TARGET" != all ]]; then
+            echo 'Repository dispatch must request target=all.' >&2
+            exit 1
+          fi
+
+      - name: Check out selected source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BUILD_SOURCE_REPOSITORY }}
+          ref: ${{ inputs.source_ref || github.event.client_payload.source_ref }}
+          token: ${{ secrets.BUILD_SOURCE_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pin source tag and version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha=$(git -C source rev-parse HEAD)
+          version=$(node -p 'require("./source/apps/desktop/package.json").version')
+          source_tag="v$version"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tagged_sha=$(git -C source rev-list -n 1 "$source_tag")
+          [[ "$tagged_sha" == "$source_sha" ]] || {
+            echo 'The selected source must be the immutable tag matching the Desktop version.' >&2
+            exit 1
+          }
+          {
+            echo "source_sha=$source_sha"
+            echo "source_tag=$source_tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: intel
+            runner: macos-14
+            rust_target: x86_64-apple-darwin
+            desktop_target: darwin-x64
+            arch: amd64
+            file_arch: x64
+          - key: arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            desktop_target: darwin-arm64
+            arch: arm64
+            file_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      PUBTO_DESKTOP_CONTROL_URLS: ${{ vars.PUBTO_DESKTOP_CONTROL_URLS }}
+      PUBTO_DESKTOP_REQUIRE_CONTROL_SEEDS: '1'
+      PUBTO_DESKTOP_TARGET: ${{ matrix.desktop_target }}
+      SOURCE_COMMIT: ${{ needs.resolve.outputs.source_sha }}
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+      HAS_APPLE_NOTARIZATION: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+    steps:
+      - name: Mask private build inputs
+        env:
+          BUILD_SOURCE_REPOSITORY: ${{ vars.BUILD_SOURCE_REPOSITORY }}
+        run: |
+          echo "::add-mask::$BUILD_SOURCE_REPOSITORY"
+          echo "::add-mask::$PUBTO_DESKTOP_CONTROL_URLS"
+
+      - name: Check out pinned source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BUILD_SOURCE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.BUILD_SOURCE_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Desktop dependencies
+        working-directory: source/apps/desktop
+        run: npm ci
+
+      - name: Verify source and production Control seed
+        working-directory: source
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_COMMIT" ]]
+          node scripts/check-desktop-version.mjs
+          node scripts/build-current-sidecar.mjs --validate-control-seeds
+
+      - name: Import Apple signing certificate
+        if: env.HAS_APPLE_SIGNING == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: pubto-${{ github.run_id }}-${{ matrix.key }}
+        run: |
+          set -euo pipefail
+          certificate="$RUNNER_TEMP/pubto-signing.p12"
+          keychain="$RUNNER_TEMP/pubto-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -P "$APPLE_CERTIFICATE_PASSWORD" -A -T /usr/bin/codesign -T /usr/bin/security -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security find-identity -v -p codesigning "$keychain" | grep -F -- "${{ secrets.APPLE_SIGNING_IDENTITY }}"
+          echo "PUBTO_APPLE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      - name: Build macOS package
+        working-directory: source
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [[ "$HAS_APPLE_SIGNING" != true ]]; then unset APPLE_SIGNING_IDENTITY; fi
+          env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID npm --prefix apps/desktop run tauri -- build --bundles app,dmg --target "${{ matrix.rust_target }}"
+          bundle="apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          app=$(find "$bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)
+          dmg=$(find "$bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$app" && test -n "$dmg"
+          for binary in pubto-desktop pubto-agent pubto-cli; do test -x "$app/Contents/MacOS/$binary"; done
+          mkdir -p dist/release
+          artifact="pubto-desktop-macos-${{ matrix.file_arch }}.dmg"
+          combined="pubto-desktop-macos-${{ matrix.file_arch }}.tar.gz"
+          evidence="pubto-desktop-macos-${{ matrix.file_arch }}.evidence.json"
+          cp "$dmg" "dist/release/$artifact"
+          hdiutil verify "dist/release/$artifact"
+          signature_status=unverified
+          notarization_status=unverified
+          if [[ "$HAS_APPLE_SIGNING" == true ]]; then
+            codesign --verify --deep --strict "$app"
+            signature_status=verified
+          fi
+          if [[ "$HAS_APPLE_SIGNING" == true && "$HAS_APPLE_NOTARIZATION" == true ]]; then
+            submit="$RUNNER_TEMP/notary-submit.json"
+            xcrun notarytool submit "dist/release/$artifact" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --output-format json > "$submit"
+            submission_id=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).id' "$submit")
+            deadline=$(( $(date +%s) + 1800 ))
+            while :; do
+              info="$RUNNER_TEMP/notary-info.json"
+              xcrun notarytool info "$submission_id" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --output-format json > "$info"
+              status=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).status' "$info")
+              printf 'Notarization status: %s\n' "$status"
+              case "$status" in Accepted) break ;; Invalid|Rejected) cat "$info"; exit 1 ;; esac
+              [[ $(date +%s) -lt $deadline ]] || { echo 'Notarization exceeded 30 minutes.' >&2; exit 1; }
+              sleep 30
+            done
+            xcrun stapler staple "dist/release/$artifact"
+            xcrun stapler validate "dist/release/$artifact"
+            notarization_status=verified
+          fi
+          stage="$RUNNER_TEMP/pubto-combined"
+          mkdir -p "$stage"
+          ditto "$app" "$stage/Pubto.app"
+          tar -czf "dist/release/$combined" -C "$stage" Pubto.app
+          sha=$(shasum -a 256 "dist/release/$artifact" | awk '{print $1}')
+          size=$(stat -f '%z' "dist/release/$artifact")
+          ARTIFACT="$artifact" EVIDENCE="$evidence" ARCH="${{ matrix.arch }}" SIZE="$size" SHA="$sha" SIGNATURE_STATUS="$signature_status" NOTARIZATION_STATUS="$notarization_status" node <<'NODE'
+          const fs=require('node:fs');
+          const value={schemaVersion:1,evidenceType:'desktop-installer-verification',sourceCommit:process.env.SOURCE_COMMIT,artifact:{component:'desktop',os:'darwin',arch:process.env.ARCH,packageType:'dmg',fileName:process.env.ARTIFACT,size:Number(process.env.SIZE),sha256:process.env.SHA},signature:{status:process.env.SIGNATURE_STATUS,scheme:'apple-developer-id'},notarization:{status:process.env.NOTARIZATION_STATUS,scheme:'apple-notary-service'},verifiedAt:new Date().toISOString()};
+          fs.writeFileSync('dist/release/'+process.env.EVIDENCE,JSON.stringify(value,null,2)+'\n');
+          NODE
+          printf '%s\n' '${{ needs.resolve.outputs.version }}' > "dist/release/version-${{ matrix.key }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pubto-macos-${{ matrix.key }}-${{ needs.resolve.outputs.source_sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: source/dist/release/*
+
+  windows:
+    needs: resolve
+    runs-on: windows-2022
+    timeout-minutes: 70
+    env:
+      PUBTO_DESKTOP_CONTROL_URLS: ${{ vars.PUBTO_DESKTOP_CONTROL_URLS }}
+      PUBTO_DESKTOP_REQUIRE_CONTROL_SEEDS: '1'
+      PUBTO_DESKTOP_TARGET: win32-x64
+      SOURCE_COMMIT: ${{ needs.resolve.outputs.source_sha }}
+    steps:
+      - name: Mask private build inputs
+        shell: pwsh
+        env:
+          BUILD_SOURCE_REPOSITORY: ${{ vars.BUILD_SOURCE_REPOSITORY }}
+        run: |
+          Write-Output "::add-mask::$env:BUILD_SOURCE_REPOSITORY"
+          Write-Output "::add-mask::$env:PUBTO_DESKTOP_CONTROL_URLS"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BUILD_SOURCE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.BUILD_SOURCE_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - working-directory: source/apps/desktop
+        run: npm ci
+      - name: Build Windows package
+        working-directory: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Source checkout is not pinned' }
+          node scripts/check-desktop-version.mjs
+          node scripts/build-current-sidecar.mjs --validate-control-seeds
+          npm --prefix apps/desktop run tauri -- build --bundles nsis,msi --target x86_64-pc-windows-msvc
+          $bundle = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
+          $app = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/pubto-desktop.exe'
+          node scripts/verify-windows-subsystem.mjs $app apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe
+          $exe = Get-ChildItem "$bundle/nsis/*.exe" | Select-Object -First 1
+          $msi = Get-ChildItem "$bundle/msi/*.msi" | Select-Object -First 1
+          if (-not $exe -or -not $msi) { throw 'Desktop installers were not produced' }
+          New-Item -ItemType Directory -Force dist/release | Out-Null
+          Copy-Item $exe.FullName dist/release/pubto-desktop-windows-x64-setup.exe
+          Copy-Item $msi.FullName dist/release/pubto-desktop-windows-x64.msi
+          go build -trimpath "-ldflags=-s -w -X main.version=${{ needs.resolve.outputs.version }}" -o dist/release/pubto.exe ./cmd/pubto
+          Copy-Item scripts/install-pubto.ps1 dist/release/install-pubto.ps1
+          Compress-Archive -Path dist/release/pubto.exe,dist/release/install-pubto.ps1 -DestinationPath dist/release/pubto-windows-x64-cli.zip -Force
+          $shaExe=(Get-FileHash dist/release/pubto-desktop-windows-x64-setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $shaMsi=(Get-FileHash dist/release/pubto-desktop-windows-x64.msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          $evidence=@{schemaVersion=1;evidenceType='desktop-installer-verification';sourceCommit=$env:SOURCE_COMMIT;artifacts=@(@{component='desktop';os='windows';arch='amd64';packageType='nsis';fileName='pubto-desktop-windows-x64-setup.exe';sha256=$shaExe},@{component='desktop';os='windows';arch='amd64';packageType='msi';fileName='pubto-desktop-windows-x64.msi';sha256=$shaMsi});signature=@{status='unverified';scheme='authenticode'};verifiedAt=(Get-Date).ToUniversalTime().ToString('o')}
+          $evidence | ConvertTo-Json -Depth 8 | Set-Content dist/release/pubto-desktop-windows-x64.evidence.json
+          Set-Content dist/release/version-windows.txt '${{ needs.resolve.outputs.version }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pubto-windows-${{ needs.resolve.outputs.source_sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: source/dist/release/*
+
+  publish:
+    needs: [resolve, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      SOURCE_COMMIT: ${{ needs.resolve.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: publisher
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BUILD_SOURCE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.BUILD_SOURCE_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: vertex-ai-llc/pubto-skill
+          token: ${{ secrets.BUILD_SOURCE_TOKEN }}
+          path: skill
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: vertex-ai-llc/homebrew-pubto
+          token: ${{ secrets.BUILD_SOURCE_TOKEN }}
+          path: homebrew
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          path: raw-artifacts
+          merge-multiple: true
+
+      - name: Assemble and verify release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for marker in version-intel.txt version-arm64.txt version-windows.txt; do
+            [[ "$(tr -d '\r\n' < "raw-artifacts/$marker")" == "$VERSION" ]]
+          done
+          mkdir -p dist/{macos-intel,macos-arm64,windows,manifests,homebrew/Casks}
+          cp raw-artifacts/pubto-desktop-macos-x64.dmg raw-artifacts/pubto-desktop-macos-x64.tar.gz raw-artifacts/pubto-desktop-macos-x64.evidence.json dist/macos-intel/
+          cp raw-artifacts/pubto-desktop-macos-arm64.dmg raw-artifacts/pubto-desktop-macos-arm64.tar.gz raw-artifacts/pubto-desktop-macos-arm64.evidence.json dist/macos-arm64/
+          cp raw-artifacts/pubto-desktop-windows-x64-setup.exe raw-artifacts/pubto-desktop-windows-x64.msi raw-artifacts/pubto-windows-x64-cli.zip raw-artifacts/pubto-desktop-windows-x64.evidence.json dist/windows/
+          node source/scripts/generate-release-manifest.mjs --version "$VERSION" --repository https://github.com/vertex-ai-llc/pubto-downloads --dist dist --output dist/manifests --source-commit "$SOURCE_COMMIT"
+          intel_sha=$(sha256sum dist/macos-intel/pubto-desktop-macos-x64.tar.gz | awk '{print $1}')
+          arm_sha=$(sha256sum dist/macos-arm64/pubto-desktop-macos-arm64.tar.gz | awk '{print $1}')
+          node source/scripts/render-homebrew-cask.mjs --version "$VERSION" --repository https://github.com/vertex-ai-llc/pubto-downloads --intel-sha "$intel_sha" --arm-sha "$arm_sha" --output dist/homebrew/Casks/pubto.rb
+          node --input-type=module <<'NODE'
+          import { auditPublicTextFiles } from './source/scripts/release-public-surface.mjs';
+          auditPublicTextFiles(['publisher/README.md','dist/manifests/manifest.json','dist/manifests/pubto-desktop-update-manifest.json','dist/manifests/SHA256SUMS','dist/homebrew/Casks/pubto.rb']);
+          NODE
+
+      - name: Create draft Release
+        id: draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; immutable releases are never overwritten.' >&2
+            exit 1
+          fi
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target main --draft --title "Pubto $VERSION" --notes "Pubto Desktop for macOS and Windows. See SHA256SUMS before installing." \
+            dist/macos-intel/* dist/macos-arm64/* dist/windows/* dist/manifests/*
+          echo 'created=true' >> "$GITHUB_OUTPUT"
+
+      - name: Verify and publish Release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(find dist/macos-intel dist/macos-arm64 dist/windows dist/manifests -type f -maxdepth 2 -exec basename {} \; | sort)
+          actual=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)
+          [[ "$actual" == "$expected" ]] || {
+            echo 'Draft Release assets do not match the verified build output.' >&2
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          }
+          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo 'published=true' >> "$GITHUB_OUTPUT"
+
+      - name: Publish manifests, Homebrew, and Skill
+        env:
+          CROSS_REPO_TOKEN: ${{ secrets.BUILD_SOURCE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git_config() { git -C "$1" config user.name pubto-release-bot; git -C "$1" config user.email support@pubto.dev; }
+
+          cp dist/manifests/manifest.json dist/manifests/pubto-desktop-update-manifest.json dist/manifests/SHA256SUMS publisher/
+          mkdir -p publisher/Casks
+          cp dist/homebrew/Casks/pubto.rb publisher/Casks/pubto.rb
+          git_config publisher
+          git -C publisher add manifest.json pubto-desktop-update-manifest.json SHA256SUMS Casks/pubto.rb
+          git -C publisher commit -m "Publish Pubto v$VERSION manifests"
+          git -C publisher push origin HEAD:main
+
+          mkdir -p homebrew/Casks
+          cp dist/homebrew/Casks/pubto.rb homebrew/Casks/pubto.rb
+          git_config homebrew
+          git -C homebrew add Casks/pubto.rb
+          if ! git -C homebrew diff --cached --quiet; then git -C homebrew commit -m "Update Pubto to $VERSION"; git -C homebrew push origin HEAD:main; fi
+
+          mkdir -p skill/agents skill/scripts
+          cp source/skills/pubto-publish/SKILL.md source/skills/pubto-publish/README.md source/skills/pubto-publish/INSTALL-PROMPT.md source/skills/pubto-publish/VERSION skill/
+          cp source/skills/pubto-publish/agents/openai.yaml skill/agents/openai.yaml
+          cp source/internal/aibundle/files/scripts/check-cors.sh source/internal/aibundle/files/scripts/install-desktop.sh source/internal/aibundle/files/scripts/install-desktop.ps1 source/internal/aibundle/files/scripts/pubtoctl.sh skill/scripts/
+          git_config skill
+          git -C skill add SKILL.md README.md INSTALL-PROMPT.md VERSION agents/openai.yaml scripts
+          if ! git -C skill diff --cached --quiet; then git -C skill commit -m "Publish Pubto Skill for Desktop $VERSION"; git -C skill push origin HEAD:main; fi
+
+      - name: Verify published surfaces
+        env:
+          VERIFY_TOKEN: ${{ secrets.BUILD_SOURCE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source
+          GH_TOKEN="$VERIFY_TOKEN" node scripts/verify-published-release.mjs --version "$VERSION" --dist "$GITHUB_WORKSPACE/dist" --repository vertex-ai-llc/pubto-downloads --skill-repository vertex-ai-llc/pubto-skill --tap-repository vertex-ai-llc/homebrew-pubto
+
+      - name: Remove incomplete draft
+        if: failure() && steps.draft.outputs.created == 'true' && steps.release.outputs.published != 'true'
+        shell: bash
+        run: gh release delete "v$VERSION" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
