@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "product": "pubto-desktop",
-  "version": "0.4.12",
+  "version": "0.4.14",
   "channel": "stable",
   "scope": "full",
-  "sourceCommit": "25af22c61c2b8344ef880f6e0aacc6cbec9db1e1",
-  "generatedAt": "2026-08-31T13:13:23.882Z",
+  "sourceCommit": "b1e99e95bb30500420360a7f66f60ece7a8656ec",
+  "generatedAt": "2026-08-31T14:34:44.478Z",
   "compatibility": {
-    "minimumDesktopVersion": "0.4.12"
+    "minimumDesktopVersion": "0.4.14"
   },
   "artifacts": [
     {
@@ -16,9 +16,9 @@
       "arch": "x64",
       "packageType": "dmg",
       "fileName": "pubto-desktop-macos-x64.dmg",
-      "size": 52498531,
-      "sha256": "6eb2a9c4b9fdd791ba13312f4b27018b9f9f62a21be8a99e6b6c99454f3b5298",
-      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.12/pubto-desktop-macos-x64.dmg"
+      "size": 52497096,
+      "sha256": "9150f2539b254c497151938582ee409d2f8260a351aa4bdc725039540b623d8b",
+      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.14/pubto-desktop-macos-x64.dmg"
     },
     {
       "component": "desktop",
@@ -26,9 +26,9 @@
       "arch": "x64",
       "packageType": "combined",
       "fileName": "pubto-desktop-macos-x64.tar.gz",
-      "size": 52353444,
-      "sha256": "b9d62779076657997f382a83d80b3913fd7fc2e1ae85bc197c75e417659db91a",
-      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.12/pubto-desktop-macos-x64.tar.gz"
+      "size": 52358400,
+      "sha256": "3f41f14e0d29b8a4bc05e50d5280840121d0dd40b09c0022fe45399307d24a90",
+      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.14/pubto-desktop-macos-x64.tar.gz"
     },
     {
       "component": "desktop",
@@ -36,9 +36,9 @@
       "arch": "arm64",
       "packageType": "dmg",
       "fileName": "pubto-desktop-macos-arm64.dmg",
-      "size": 51509073,
-      "sha256": "04807279f912e397bf95daa30cbb2763d7103c9d225cbca0586042e855890109",
-      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.12/pubto-desktop-macos-arm64.dmg"
+      "size": 51511411,
+      "sha256": "43cd8760810aa2c00b87b59138291fd4afe7bb037c64ac3bacc12b2ae626708c",
+      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.14/pubto-desktop-macos-arm64.dmg"
     },
     {
       "component": "desktop",
@@ -46,9 +46,9 @@
       "arch": "arm64",
       "packageType": "combined",
       "fileName": "pubto-desktop-macos-arm64.tar.gz",
-      "size": 51352456,
-      "sha256": "abb6bb0f7b0010ffc2a6d8055513955ce71cc893dab03e183ecf8a1a92a4b288",
-      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.12/pubto-desktop-macos-arm64.tar.gz"
+      "size": 51355510,
+      "sha256": "eb6615745569409a3e77fe9e2f4e579d8c6fb60de6f29b7f1312285a0a476652",
+      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.14/pubto-desktop-macos-arm64.tar.gz"
     },
     {
       "component": "desktop",
@@ -56,9 +56,9 @@
       "arch": "x64",
       "packageType": "nsis",
       "fileName": "pubto-desktop-windows-x64-setup.exe",
-      "size": 29069481,
-      "sha256": "2db295d72f21bb5f3c9f330385c8caec756ab1166f2abdeb9cb38231106d4215",
-      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.12/pubto-desktop-windows-x64-setup.exe"
+      "size": 29073002,
+      "sha256": "86498e4df75a50760e7f3cd96490846cab1becf00ab18d6e619adfef843f6e90",
+      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.14/pubto-desktop-windows-x64-setup.exe"
     },
     {
       "component": "desktop",
@@ -66,9 +66,9 @@
       "arch": "x64",
       "packageType": "msi",
       "fileName": "pubto-desktop-windows-x64.msi",
-      "size": 37679988,
-      "sha256": "6b531415250b8f665dff5d0ed35f9fe2cf0c549bd86180fca32ef2495a1ab508",
-      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.12/pubto-desktop-windows-x64.msi"
+      "size": 37688180,
+      "sha256": "cb9320e7bfef22bf2d64d91d24fbd4615235ede3b4e2b3b6806fd35cb066df12",
+      "url": "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.14/pubto-desktop-windows-x64.msi"
     }
   ]
 }
