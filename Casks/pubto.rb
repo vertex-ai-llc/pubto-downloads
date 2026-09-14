@@ -1,14 +1,14 @@
 cask "pubto" do
-  version "0.4.19"
+  version "0.4.20"
 
   on_intel do
-    url "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.19/pubto-desktop-macos-x64.tar.gz"
-    sha256 "b38ff0a4cbddf6556502f9d666ed58072b5ec5da558057b59883f0724d3bdc7f"
+    url "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.20/pubto-desktop-macos-x64.tar.gz"
+    sha256 "63bbbfc826fc5870c0b93738fd071fcf834b3ebcbac7b068f6f6c7ca35c8748b"
   end
 
   on_arm do
-    url "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.19/pubto-desktop-macos-arm64.tar.gz"
-    sha256 "397478c7be54b451e5271cf8bb40e5dd6a3013a54c156ebae9aca6cab749c54b"
+    url "https://github.com/vertex-ai-llc/pubto-downloads/releases/download/v0.4.20/pubto-desktop-macos-arm64.tar.gz"
+    sha256 "a3e3a90baebcbdcfce32ae518c2dd5269f06e400969513b102e0a95fc94bd64a"
   end
 
   name "Pubto"
