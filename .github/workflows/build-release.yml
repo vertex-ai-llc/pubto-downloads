@@ -260,9 +260,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+      - name: Import Pubto Windows signing certificate
+        shell: pwsh
+        env:
+          PUBTO_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.PUBTO_WINDOWS_CODESIGN_PFX_BASE64 }}
+          PUBTO_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.PUBTO_WINDOWS_CODESIGN_PFX_PASSWORD }}
+          PUBTO_WINDOWS_CODESIGN_THUMBPRINT: ${{ vars.PUBTO_WINDOWS_CODESIGN_THUMBPRINT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $thumbprint = ($env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          if ($env:PUBTO_WINDOWS_CODESIGN_PFX_BASE64 -eq '' -or $env:PUBTO_WINDOWS_CODESIGN_PFX_PASSWORD -eq '' -or $thumbprint -notmatch '^[0-9A-F]{40}$') {
+            throw 'Pubto Windows Authenticode secrets/variable are not configured.'
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'pubto-windows-codesign.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PUBTO_WINDOWS_CODESIGN_PFX_BASE64))
+          $password = ConvertTo-SecureString $env:PUBTO_WINDOWS_CODESIGN_PFX_PASSWORD -AsPlainText -Force
+          $certificate = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password) |
+            Where-Object { $_.HasPrivateKey } | Select-Object -First 1
+          if ($null -eq $certificate -or $certificate.Thumbprint.ToUpperInvariant() -ne $thumbprint -or -not $certificate.HasPrivateKey) {
+            throw 'The imported Pubto signing certificate does not match the configured thumbprint or has no private key.'
+          }
+          "PUBTO_WINDOWS_CODESIGN_THUMBPRINT=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - working-directory: source/apps/desktop
         run: npm ci
-      - name: Build Windows package
+      - name: Build and sign native Windows binaries
         working-directory: source
         shell: pwsh
         run: |
@@ -270,7 +291,24 @@ jobs:
           if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Source checkout is not pinned' }
           node scripts/check-desktop-version.mjs
           node scripts/build-current-sidecar.mjs --validate-control-seeds
-          npm --prefix apps/desktop run tauri -- build --bundles nsis,msi --target x86_64-pc-windows-msvc
+          node scripts/build-current-sidecar.mjs
+          & scripts/windows/sign-release-artifacts.ps1 -Thumbprint $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT -Path @(
+            'apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe',
+            'apps/desktop/src-tauri/binaries/pubto-cli-x86_64-pc-windows-msvc.exe'
+          )
+      - name: Build Windows package
+        working-directory: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Source checkout is not pinned' }
+          node scripts/prepare-windows-installer-template.mjs
+          $templatePath = (Resolve-Path 'apps/desktop/src-tauri/windows/installer.generated.nsi').Path
+          $signingConfig = Join-Path $env:RUNNER_TEMP 'pubto-tauri-windows-signing.json'
+          @{ bundle = @{ windows = @{ certificateThumbprint = $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com'; tsp = $true; nsis = @{ template = $templatePath } } } } |
+            ConvertTo-Json -Depth 8 -Compress | Set-Content -LiteralPath $signingConfig -Encoding utf8
+          $env:PUBTO_SKIP_SIDECAR_BUILD = '1'
+          npm --prefix apps/desktop run tauri -- build --bundles nsis,msi --target x86_64-pc-windows-msvc --config $signingConfig
           $bundle = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
           $app = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/pubto-desktop.exe'
           node scripts/verify-windows-subsystem.mjs $app apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe
@@ -281,11 +319,27 @@ jobs:
           Copy-Item $exe.FullName dist/release/pubto-desktop-windows-x64-setup.exe
           Copy-Item $msi.FullName dist/release/pubto-desktop-windows-x64.msi
           go build -trimpath "-ldflags=-s -w -X main.version=${{ needs.resolve.outputs.version }}" -o dist/release/pubto.exe ./cmd/pubto
+          & scripts/windows/sign-release-artifacts.ps1 -Thumbprint $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT -Path @(
+            $app,
+            'apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe',
+            'apps/desktop/src-tauri/binaries/pubto-cli-x86_64-pc-windows-msvc.exe',
+            'dist/release/pubto.exe',
+            'dist/release/pubto-desktop-windows-x64-setup.exe',
+            'dist/release/pubto-desktop-windows-x64.msi'
+          )
           Copy-Item scripts/install-pubto.ps1 dist/release/install-pubto.ps1
           Compress-Archive -Path dist/release/pubto.exe,dist/release/install-pubto.ps1 -DestinationPath dist/release/pubto-windows-x64-cli.zip -Force
+          & scripts/windows/sign-release-artifacts.ps1 -VerifyOnly -Thumbprint $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT -Path @(
+            $app,
+            'apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe',
+            'apps/desktop/src-tauri/binaries/pubto-cli-x86_64-pc-windows-msvc.exe',
+            'dist/release/pubto.exe',
+            'dist/release/pubto-desktop-windows-x64-setup.exe',
+            'dist/release/pubto-desktop-windows-x64.msi'
+          )
           $shaExe=(Get-FileHash dist/release/pubto-desktop-windows-x64-setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           $shaMsi=(Get-FileHash dist/release/pubto-desktop-windows-x64.msi -Algorithm SHA256).Hash.ToLowerInvariant()
-          $evidence=@{schemaVersion=1;evidenceType='desktop-installer-verification';sourceCommit=$env:SOURCE_COMMIT;artifacts=@(@{component='desktop';os='windows';arch='amd64';packageType='nsis';fileName='pubto-desktop-windows-x64-setup.exe';sha256=$shaExe},@{component='desktop';os='windows';arch='amd64';packageType='msi';fileName='pubto-desktop-windows-x64.msi';sha256=$shaMsi});signature=@{status='unverified';scheme='authenticode'};verifiedAt=(Get-Date).ToUniversalTime().ToString('o')}
+          $evidence=@{schemaVersion=1;evidenceType='desktop-installer-verification';sourceCommit=$env:SOURCE_COMMIT;artifacts=@(@{component='desktop';os='windows';arch='amd64';packageType='nsis';fileName='pubto-desktop-windows-x64-setup.exe';sha256=$shaExe},@{component='desktop';os='windows';arch='amd64';packageType='msi';fileName='pubto-desktop-windows-x64.msi';sha256=$shaMsi});signature=@{status='verified';scheme='authenticode';thumbprint=$env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT};verifiedAt=(Get-Date).ToUniversalTime().ToString('o')}
           $evidence | ConvertTo-Json -Depth 8 | Set-Content dist/release/pubto-desktop-windows-x64.evidence.json
           Set-Content dist/release/version-windows.txt '${{ needs.resolve.outputs.version }}'
       - uses: actions/upload-artifact@v4

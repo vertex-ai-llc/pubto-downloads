@@ -19,6 +19,10 @@ for (const [pattern, label] of [
   [/render-homebrew-cask\.mjs/, "Homebrew generation"],
   [/verify-published-release\.mjs/, "remote publication verification"],
   [/PUBTO_DESKTOP_REQUIRE_CONTROL_SEEDS/, "production Control seed gate"],
+  [/PUBTO_WINDOWS_CODESIGN_PFX_BASE64/, "Windows signing certificate secret"],
+  [/Import-PfxCertificate/, "Windows signing certificate import"],
+  [/sign-release-artifacts\.ps1/, "Windows artifact signing"],
+  [/signature=@\{status='verified';scheme='authenticode'/, "Windows signature evidence"],
 ]) assert.match(workflow, pattern, `missing ${label}`);
 
 for (const [pattern, label] of [
@@ -40,4 +44,3 @@ for (const internal of ["BUILD_SOURCE_TOKEN", "APPLE_CERTIFICATE", "PUBTO_DESKTO
 assert.match(readme, /https:\/\/pubto\.dev\/downloads/);
 assert.match(readme, /Install or update the official Pubto Skill/);
 console.log("downloads workflow contract: PASS");
-
