@@ -324,6 +324,11 @@ jobs:
           if ($generatedInstallerText -match '(?m)^\s*RequestExecutionLevel user\s*$') {
             throw 'Generated NSIS installer still requests user execution level.'
           }
+          foreach ($marker in @('taskkill.exe', 'pubto-agent.exe', 'Get-CimInstance Win32_Process')) {
+            if (-not $generatedInstallerText.Contains($marker)) {
+              throw "Generated NSIS installer is missing the Pubto process cleanup marker: $marker"
+            }
+          }
           $rebuiltInstaller = Join-Path $env:RUNNER_TEMP 'pubto-windows-installer.exe'
           & scripts/windows/rebuild-installer.ps1 -InstallerScript $generatedInstallerScript -OutputPath $rebuiltInstaller
           $exe = Get-Item $rebuiltInstaller
