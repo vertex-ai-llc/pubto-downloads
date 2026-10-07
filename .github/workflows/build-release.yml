@@ -302,8 +302,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Source checkout is not pinned' }
+          # Use the same pinned NSIS template preparation as EasyAI. The
+          # generated template performs the stop sweep before Tauri reaches
+          # maintenance pages or the install section; the post-generation
+          # rebuild below remains the final deterministic packaging step.
+          node scripts/prepare-windows-installer-template.mjs
+          $templatePath = (Resolve-Path 'apps/desktop/src-tauri/windows/installer.generated.nsi').Path
           $signingConfig = Join-Path $env:RUNNER_TEMP 'pubto-tauri-windows-signing.json'
-          @{ bundle = @{ windows = @{ certificateThumbprint = $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com'; tsp = $true } } } |
+          @{ bundle = @{ windows = @{ certificateThumbprint = $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com'; tsp = $true; nsis = @{ template = $templatePath } } } } |
             ConvertTo-Json -Depth 8 -Compress | Set-Content -LiteralPath $signingConfig -Encoding utf8
           $env:PUBTO_SKIP_SIDECAR_BUILD = '1'
           npm --prefix apps/desktop run tauri -- build --bundles nsis,msi --target x86_64-pc-windows-msvc --config $signingConfig
