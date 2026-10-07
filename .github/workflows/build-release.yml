@@ -324,9 +324,13 @@ jobs:
           if ($generatedInstallerText -match '(?m)^\s*RequestExecutionLevel user\s*$') {
             throw 'Generated NSIS installer still requests user execution level.'
           }
+          if ($generatedInstallerText -notmatch '(?i)installer-hooks\.nsh') {
+            throw 'Generated NSIS installer does not include the Pubto process cleanup hook.'
+          }
+          $hookText = Get-Content -LiteralPath 'apps/desktop/src-tauri/windows/installer-hooks.nsh' -Raw
           foreach ($marker in @('taskkill.exe', 'pubto-agent.exe', 'Get-CimInstance Win32_Process')) {
-            if (-not $generatedInstallerText.Contains($marker)) {
-              throw "Generated NSIS installer is missing the Pubto process cleanup marker: $marker"
+            if (-not $hookText.Contains($marker)) {
+              throw "Pubto installer hook is missing the process cleanup marker: $marker"
             }
           }
           $rebuiltInstaller = Join-Path $env:RUNNER_TEMP 'pubto-windows-installer.exe'
