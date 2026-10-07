@@ -302,19 +302,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Source checkout is not pinned' }
-          node scripts/prepare-windows-installer-template.mjs
-          $templatePath = (Resolve-Path 'apps/desktop/src-tauri/windows/installer.generated.nsi').Path
           $signingConfig = Join-Path $env:RUNNER_TEMP 'pubto-tauri-windows-signing.json'
-          @{ bundle = @{ windows = @{ certificateThumbprint = $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com'; tsp = $true; nsis = @{ template = $templatePath } } } } |
+          @{ bundle = @{ windows = @{ certificateThumbprint = $env:PUBTO_WINDOWS_CODESIGN_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com'; tsp = $true } } } |
             ConvertTo-Json -Depth 8 -Compress | Set-Content -LiteralPath $signingConfig -Encoding utf8
           $env:PUBTO_SKIP_SIDECAR_BUILD = '1'
           npm --prefix apps/desktop run tauri -- build --bundles nsis,msi --target x86_64-pc-windows-msvc --config $signingConfig
           $bundle = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
           $app = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/pubto-desktop.exe'
           node scripts/verify-windows-subsystem.mjs $app apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe
-          $exe = Get-ChildItem "$bundle/nsis/*.exe" | Select-Object -First 1
+          $generatedInstallerScript = (Resolve-Path 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/nsis/x64/installer.nsi').Path
+          $rebuiltInstaller = Join-Path $env:RUNNER_TEMP 'pubto-windows-installer.exe'
+          & scripts/windows/rebuild-installer.ps1 -InstallerScript $generatedInstallerScript -OutputPath $rebuiltInstaller
+          $exe = Get-Item $rebuiltInstaller
           $msi = Get-ChildItem "$bundle/msi/*.msi" | Select-Object -First 1
           if (-not $exe -or -not $msi) { throw 'Desktop installers were not produced' }
+          & scripts/windows/verify-installer.ps1 -Installer $exe.FullName
           New-Item -ItemType Directory -Force dist/release | Out-Null
           Copy-Item $exe.FullName dist/release/pubto-desktop-windows-x64-setup.exe
           Copy-Item $msi.FullName dist/release/pubto-desktop-windows-x64.msi
