@@ -317,6 +317,13 @@ jobs:
           $app = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/pubto-desktop.exe'
           node scripts/verify-windows-subsystem.mjs $app apps/desktop/src-tauri/binaries/pubto-agent-x86_64-pc-windows-msvc.exe
           $generatedInstallerScript = (Resolve-Path 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/nsis/x64/installer.nsi').Path
+          $generatedInstallerText = Get-Content -LiteralPath $generatedInstallerScript -Raw
+          if ($generatedInstallerText -notmatch '(?m)^\s*RequestExecutionLevel admin\s*$') {
+            throw 'Generated NSIS installer is not elevated; refusing to publish a package that cannot stop an administrator-owned Agent.'
+          }
+          if ($generatedInstallerText -match '(?m)^\s*RequestExecutionLevel user\s*$') {
+            throw 'Generated NSIS installer still requests user execution level.'
+          }
           $rebuiltInstaller = Join-Path $env:RUNNER_TEMP 'pubto-windows-installer.exe'
           & scripts/windows/rebuild-installer.ps1 -InstallerScript $generatedInstallerScript -OutputPath $rebuiltInstaller
           $exe = Get-Item $rebuiltInstaller
