@@ -482,8 +482,8 @@ jobs:
           if ! git -C homebrew diff --cached --quiet; then git -C homebrew commit -m "Update Pubto to $VERSION"; git -C homebrew push origin HEAD:main; fi
 
           mkdir -p skill/agents skill/scripts
-          cp source/skills/pubto-publish/SKILL.md source/skills/pubto-publish/README.md source/skills/pubto-publish/INSTALL-PROMPT.md source/skills/pubto-publish/VERSION skill/
-          cp source/skills/pubto-publish/agents/openai.yaml skill/agents/openai.yaml
+          cp source/skills/pubto-skill/SKILL.md source/skills/pubto-skill/README.md source/skills/pubto-skill/INSTALL-PROMPT.md source/skills/pubto-skill/VERSION skill/
+          cp source/skills/pubto-skill/agents/openai.yaml skill/agents/openai.yaml
           cp source/internal/aibundle/files/scripts/check-cors.sh source/internal/aibundle/files/scripts/install-desktop.sh source/internal/aibundle/files/scripts/install-desktop.ps1 source/internal/aibundle/files/scripts/pubtoctl.sh skill/scripts/
           git_config skill
           git -C skill add SKILL.md README.md INSTALL-PROMPT.md VERSION agents/openai.yaml scripts
